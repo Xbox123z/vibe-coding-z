@@ -1,0 +1,483 @@
+﻿<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <title>Neon Rift - 极简第一人称射击</title>
+  <style>
+    :root {
+      --sky1: #0b1222;
+      --sky2: #111827;
+      --floor1: #0a0c11;
+      --floor2: #0d111a;
+      --accent: #10b981;
+      --accent2: #22d3ee;
+      --danger: #f87171;
+      --wallA: #1f2937;
+      --wallB: #334155;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      background: radial-gradient(circle at 20% 20%, #0f172a, #060912 60%);
+      color: #e5e7eb;
+      font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
+      user-select: none;
+      overflow: hidden;
+    }
+    #frame {
+      position: relative;
+      width: min(1100px, 100vw - 24px);
+      aspect-ratio: 16 / 9;
+      border: 2px solid #1f2937;
+      border-radius: 12px;
+      box-shadow: 0 25px 60px rgba(0,0,0,0.55);
+      background: #05070c;
+    }
+    canvas { width: 100%; height: 100%; display: block; border-radius: 10px; outline: none; }
+    #cross {
+      position: absolute; left: 50%; top: 50%; width: 18px; height: 18px; margin: -9px 0 0 -9px;
+      pointer-events: none; filter: drop-shadow(0 0 6px rgba(16,185,129,0.4));
+    }
+    #cross::before, #cross::after {
+      content: ""; position: absolute; background: #f8fafc; border-radius: 1px;
+    }
+    #cross::before { width: 18px; height: 2px; top: 8px; left: 0; }
+    #cross::after  { width: 2px; height: 18px; top: 0; left: 8px; }
+    #hudBox { position: absolute; inset: 0; pointer-events: none; }
+    #hud {
+      position: absolute; left: 12px; bottom: 10px;
+      padding: 8px 10px; background: rgba(0,0,0,0.45);
+      border: 1px solid #111827; border-radius: 8px; font-size: 14px; line-height: 1.5;
+      backdrop-filter: blur(4px);
+    }
+    #hint {
+      position: absolute; left: 12px; top: 12px; background: rgba(0,0,0,0.55);
+      border: 1px solid #111827; padding: 8px 10px; border-radius: 8px; font-size: 13px; line-height: 1.45;
+      max-width: 320px; backdrop-filter: blur(4px);
+    }
+    #alert { position: absolute; right: 12px; top: 12px; font-size: 14px; color: #22d3ee; text-align: right; }
+  </style>
+</head>
+<body>
+  <div id="frame">
+    <canvas id="view" width="1024" height="576" tabindex="0"></canvas>
+    <div id="cross"></div>
+    <div id="hudBox">
+      <div id="hud"></div>
+      <div id="hint">W/S 前进后退 · A/D 平移 · 鼠标/←→ 转向 · Shift 冲刺 · 空格/左键 射击<br>点击画面启用鼠标锁定，击败全部敌人即可胜利。</div>
+      <div id="alert"></div>
+    </div>
+  </div>
+  <script>
+    const canvas = document.getElementById('view');
+    const ctx = canvas.getContext('2d');
+    const HUD = document.getElementById('hud');
+    const ALERT = document.getElementById('alert');
+    const W = canvas.width, H = canvas.height;
+
+    // --- 核心参数 ---
+    const FOV = Math.PI / 2.5; // 72° 更宽视角
+    const HALF_FOV = FOV / 2;
+    const NUM_RAYS = 420;
+    const MAX_DIST = 22;
+    const MOVE_SPEED = 3.8;
+    const SPRINT_SPEED = 6.2;
+    const ROT_SPEED = 2.8;
+    const enemyRadius = 0.35;
+
+    // --- 世界地图：1 墙体，0 空地 ---
+    const map = [
+      "111111111111111",
+      "1.....0....0..1",
+      "1.111.0.1110..1",
+      "1.0...0....0..1",
+      "1.0.11101110..1",
+      "1.0.0...0.....1",
+      "1.0.0.E.0.E...1",
+      "1.0.0...0.....1",
+      "1.0.11101110..1",
+      "1.0...0....0..1",
+      "1.111.0.1110..1",
+      "1.....0....0..1",
+      "111111111111111"
+    ].map(r => r.replace(/\./g, '0'));
+    const mapH = map.length, mapW = map[0].length;
+
+    const player = {
+      x: 2.5,
+      y: 2.5,
+      angle: 0,
+      hp: 100,
+      shield: 40,
+      stamina: 100,
+      score: 0,
+      state: 'alive'
+    };
+
+    const enemies = [];
+    for (let y = 0; y < mapH; y++) {
+      for (let x = 0; x < mapW; x++) {
+        if (map[y][x] === 'E') {
+          enemies.push({ x: x + 0.5, y: y + 0.5, hp: 3, alive: true, cooldown: 0, hurt: 0 });
+        }
+      }
+    }
+
+    // 输入控制
+    const keys = new Set();
+    window.addEventListener('keydown', e => { const k = (e.code || e.key).toLowerCase(); keys.add(k); if (["arrowup","arrowdown","arrowleft","arrowright","space"].includes(k)) e.preventDefault(); });
+    window.addEventListener('keyup',   e => keys.delete((e.code || e.key).toLowerCase()));
+    window.addEventListener('blur', () => keys.clear());
+    document.addEventListener('visibilitychange', () => { if (document.hidden) keys.clear(); });
+
+    canvas.addEventListener('click', e => {
+      if (document.pointerLockElement !== canvas) {
+        canvas.requestPointerLock();
+      } else {
+        shoot();
+      }
+    });
+    window.addEventListener('mousemove', e => {
+      if (document.pointerLockElement === canvas) player.angle += e.movementX * 0.0026;
+    });
+
+    // --- 工具函数 ---
+    const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+    const wrapAngle = a => {
+      if (a < -Math.PI) a += Math.PI * 2;
+      if (a > Math.PI) a -= Math.PI * 2;
+      return a;
+    };
+
+    function isWall(x, y) {
+      const mx = Math.floor(x), my = Math.floor(y);
+      if (mx < 0 || my < 0 || mx >= mapW || my >= mapH) return true;
+      return map[my][mx] === '1';
+    }
+
+    function rayCast(angle) {
+      // 简单步进射线，性能与精度平衡
+      const sin = Math.sin(angle), cos = Math.cos(angle);
+      let dist = 0, hitVertical = false;
+      while (dist < MAX_DIST) {
+        const x = player.x + cos * dist;
+        const y = player.y + sin * dist;
+        if (isWall(x, y)) {
+          const fx = x - Math.floor(x);
+          hitVertical = fx < 0.02 || fx > 0.98;
+          break;
+        }
+        dist += 0.02;
+      }
+      return { dist, hitVertical };
+    }
+
+    // --- 粒子系统 ---
+    const particles = [];
+    function spawnParticle(x, y, color, life = 0.4, size = 2) {
+      particles.push({ x, y, life, max: life, size, vx: (Math.random() - 0.5) * 3, vy: (Math.random() - 0.5) * 3, color });
+    }
+
+    // --- 射击 ---
+    let muzzle = 0;
+    let cd = 0;
+    function shoot() {
+      if (cd > 0 || player.state !== 'alive') return;
+      cd = 0.22;
+      muzzle = 0.08;
+      const ray = rayCast(player.angle);
+      let best = null;
+      let bestDist = ray.dist;
+      for (const e of enemies) {
+        if (!e.alive) continue;
+        const dx = e.x - player.x, dy = e.y - player.y;
+        const dist = Math.hypot(dx, dy);
+        const ang = Math.atan2(dy, dx);
+        const diff = wrapAngle(ang - player.angle);
+        if (Math.abs(diff) < 0.09 && dist < bestDist + enemyRadius) {
+          bestDist = dist;
+          best = e;
+        }
+      }
+      if (best) {
+        best.hp -= 1;
+        best.hurt = 0.2;
+        spawnParticle(best.x, best.y, '#f87171', 0.35, 3);
+        if (best.hp <= 0 && best.alive) {
+          best.alive = false;
+          player.score += 1;
+          for (let i = 0; i < 14; i++) spawnParticle(best.x, best.y, '#ef4444', 0.6, 2.5);
+        }
+      } else {
+        // 命中墙体火花
+        const hitX = player.x + Math.cos(player.angle) * ray.dist;
+        const hitY = player.y + Math.sin(player.angle) * ray.dist;
+        spawnParticle(hitX, hitY, '#22d3ee', 0.25, 2);
+      }
+    }
+
+    // --- 敌人逻辑 ---
+    function updateEnemies(dt) {
+      for (const e of enemies) {
+        if (!e.alive) continue;
+        e.cooldown = Math.max(0, e.cooldown - dt);
+        e.hurt = Math.max(0, e.hurt - dt);
+
+        const dx = player.x - e.x;
+        const dy = player.y - e.y;
+        const dist = Math.hypot(dx, dy);
+        const targetAng = Math.atan2(dy, dx);
+
+        // 简单避墙：尝试微调角度
+        let speed = 1.9;
+        let ang = targetAng;
+        for (let i = 0; i < 2; i++) {
+          const nx = e.x + Math.cos(ang) * speed * dt;
+          const ny = e.y + Math.sin(ang) * speed * dt;
+          if (!isWall(nx, e.y)) e.x = nx;
+          if (!isWall(e.x, ny)) e.y = ny;
+        }
+
+        if (dist < 0.8 && e.cooldown === 0) {
+          e.cooldown = 0.9;
+          if (player.state === 'alive') {
+            const dmg = 12;
+            if (player.shield > 0) {
+              const consume = Math.min(player.shield, dmg);
+              player.shield -= consume;
+              player.hp -= Math.max(0, dmg - consume);
+            } else {
+              player.hp -= dmg;
+            }
+            ALERT.textContent = '受到攻击!';
+            setTimeout(() => { ALERT.textContent = ''; }, 220);
+            for (let i = 0; i < 8; i++) spawnParticle(player.x, player.y, '#f87171', 0.4, 2.5);
+            if (player.hp <= 0) player.state = 'down';
+          }
+        }
+      }
+    }
+
+    // --- 渲染 ---
+    function drawScene() {
+      // 天空与地面
+      const sky = ctx.createLinearGradient(0, 0, 0, H / 2);
+      sky.addColorStop(0, 'var(--sky1)');
+      sky.addColorStop(1, 'var(--sky2)');
+      ctx.fillStyle = sky;
+      ctx.fillRect(0, 0, W, H / 2);
+
+      const floor = ctx.createLinearGradient(0, H / 2, 0, H);
+      floor.addColorStop(0, 'var(--floor1)');
+      floor.addColorStop(1, 'var(--floor2)');
+      ctx.fillStyle = floor;
+      ctx.fillRect(0, H / 2, W, H);
+
+      // 墙体光影
+      const step = W / NUM_RAYS;
+      for (let i = 0; i < NUM_RAYS; i++) {
+        const rayAng = player.angle - HALF_FOV + (i / NUM_RAYS) * FOV;
+        const { dist, hitVertical } = rayCast(rayAng);
+        const corrected = dist * Math.cos(rayAng - player.angle);
+        const height = H / (corrected + 0.0001);
+        const shade = clamp(1 - corrected / MAX_DIST, 0, 1);
+        const hue = hitVertical ?  varColor('#1f2937', '#334155', shade) : varColor('#111827', '#1f2937', shade);
+        const y0 = (H - height) / 2;
+        ctx.fillStyle = hue;
+        ctx.fillRect(i * step, y0, step + 1, height);
+        // 轻微扫描线
+        ctx.fillStyle = 'rgba(255,255,255,' + (shade * 0.04) + ')';
+        ctx.fillRect(i * step, y0 + height * 0.66, step + 1, 1);
+      }
+
+      // 敌人精灵排序绘制
+      const renderList = [];
+      for (const e of enemies) {
+        if (!e.alive) continue;
+        const dx = e.x - player.x, dy = e.y - player.y;
+        const dist = Math.hypot(dx, dy);
+        const ang = wrapAngle(Math.atan2(dy, dx) - player.angle);
+        if (Math.abs(ang) > HALF_FOV + 0.3) continue;
+        renderList.push({ e, dist, ang });
+      }
+      renderList.sort((a, b) => b.dist - a.dist);
+
+      for (const obj of renderList) {
+        const { e, dist, ang } = obj;
+        const size = Math.min(200, H / dist);
+        const x = W / 2 + Math.tan(ang) * W / 2 - size / 2;
+        const y = H / 2 - size * 0.75;
+        const glow = e.hurt > 0 ? '#ef4444' : '#22d3ee';
+        ctx.fillStyle = 'rgba(0,0,0,0.15)';
+        ctx.fillRect(x - 2, y + size * 0.7, size + 4, 6);
+        const grd = ctx.createLinearGradient(x, y, x + size, y + size);
+        grd.addColorStop(0, glow);
+        grd.addColorStop(1, '#0ea5e9');
+        ctx.fillStyle = grd;
+        ctx.globalAlpha = clamp(1 - dist / MAX_DIST, 0.15, 1);
+        ctx.beginPath();
+        if (ctx.roundRect) {
+          ctx.roundRect(x, y, size, size * 1.1, 10);
+        } else {
+          ctx.rect(x, y, size, size * 1.1);
+        }
+        ctx.fill();
+        ctx.globalAlpha = 1;
+      }
+
+      // 粒子
+      for (const p of particles) {
+        const px = (p.x - player.x);
+        const py = (p.y - player.y);
+        const dist = Math.hypot(px, py);
+        const ang = wrapAngle(Math.atan2(py, px) - player.angle);
+        if (Math.abs(ang) > HALF_FOV + 0.4) continue;
+        const size = H / dist * 0.25 * p.size;
+        const sx = W / 2 + Math.tan(ang) * W / 2;
+        const sy = H / 2;
+        ctx.fillStyle = p.color;
+        ctx.globalAlpha = p.life / p.max;
+        ctx.fillRect(sx - size / 2, sy, size, size);
+        ctx.globalAlpha = 1;
+      }
+
+      // 霰弹火光
+      if (muzzle > 0) {
+        const g = ctx.createRadialGradient(W/2, H/2, 6, W/2, H/2, 120);
+        g.addColorStop(0, 'rgba(255,255,255,0.55)');
+        g.addColorStop(1, 'rgba(255,255,255,0)');
+        ctx.fillStyle = g;
+        ctx.fillRect(0, 0, W, H);
+      }
+
+      drawMiniMap();
+    }
+
+    function drawMiniMap() {
+      const size = 150;
+      const cell = size / mapW;
+      const ox = W - size - 12;
+      const oy = 12;
+      ctx.fillStyle = 'rgba(0,0,0,0.55)';
+      ctx.fillRect(ox - 6, oy - 6, size + 12, size + 12);
+      for (let y = 0; y < mapH; y++) {
+        for (let x = 0; x < mapW; x++) {
+          if (map[y][x] === '1') {
+            ctx.fillStyle = '#1f2937';
+            ctx.fillRect(ox + x * cell, oy + y * cell, cell, cell);
+          }
+        }
+      }
+      for (const e of enemies) {
+        if (!e.alive) continue;
+        ctx.fillStyle = '#ef4444';
+        ctx.beginPath();
+        ctx.arc(ox + e.x * cell, oy + e.y * cell, 3, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.fillStyle = '#10b981';
+      ctx.beginPath();
+      ctx.arc(ox + player.x * cell, oy + player.y * cell, 3.5, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = '#10b981';
+      ctx.beginPath();
+      ctx.moveTo(ox + player.x * cell, oy + player.y * cell);
+      ctx.lineTo(ox + (player.x + Math.cos(player.angle) * 0.9) * cell, oy + (player.y + Math.sin(player.angle) * 0.9) * cell);
+      ctx.stroke();
+    }
+
+    function varColor(a, b, t) {
+      // 插值颜色 (hex) => rgba string
+      const ca = parseInt(a.slice(1), 16);
+      const cb = parseInt(b.slice(1), 16);
+      const r = ((ca >> 16) & 255) * t + ((cb >> 16) & 255) * (1 - t);
+      const g = ((ca >> 8) & 255) * t + ((cb >> 8) & 255) * (1 - t);
+      const bl = (ca & 255) * t + (cb & 255) * (1 - t);
+      return `rgb(${r|0},${g|0},${bl|0})`;
+    }
+
+    // --- 状态更新 ---
+    let last = performance.now();
+    function tick(now) {
+      const dt = Math.min(0.05, (now - last) / 1000);
+      last = now;
+
+      if (player.state === 'alive') {
+        handleMove(dt);
+        cd = Math.max(0, cd - dt);
+      }
+
+      updateEnemies(dt);
+      updateParticles(dt);
+      if (muzzle > 0) muzzle -= dt;
+
+      drawScene();
+      updateHUD();
+
+      requestAnimationFrame(tick);
+    }
+
+    function updateParticles(dt) {
+      for (const p of particles) {
+        p.life -= dt;
+        p.x += p.vx * dt;
+        p.y += p.vy * dt;
+      }
+      for (let i = particles.length - 1; i >= 0; i--) if (particles[i].life <= 0) particles.splice(i, 1);
+    }
+
+    function handleMove(dt) {
+      const forward = keys.has('keyw') ? 1 : 0;
+      const back    = keys.has('keys') ? 1 : 0;
+      const left    = keys.has('keya') ? 1 : 0;
+      const right   = keys.has('keyd') ? 1 : 0;
+      const rotL = keys.has('arrowleft') || keys.has('keyq');
+      const rotR = keys.has('arrowright') || keys.has('keye');
+      if (rotL) player.angle -= ROT_SPEED * dt;
+      if (rotR) player.angle += ROT_SPEED * dt;
+
+      const sin = Math.sin(player.angle), cos = Math.cos(player.angle);
+      const dir = forward - back;
+      const strafe = right - left;
+      const sprinting = keys.has('shiftleft') && player.stamina > 5;
+      const speed = sprinting ? SPRINT_SPEED : MOVE_SPEED;
+      const dx = (cos * dir - sin * strafe) * speed * dt;
+      const dy = (sin * dir + cos * strafe) * speed * dt;
+
+      const nx = player.x + dx;
+      const ny = player.y + dy;
+      if (!isWall(nx, player.y)) player.x = nx;
+      if (!isWall(player.x, ny)) player.y = ny;
+
+      // 体力消耗与恢复
+      if (sprinting && (dir !== 0 || strafe !== 0)) player.stamina = Math.max(0, player.stamina - 25 * dt);
+      else player.stamina = Math.min(100, player.stamina + 15 * dt);
+    }
+
+    function updateHUD() {
+      const alive = enemies.filter(e => e.alive).length;
+      let text = `HP ${Math.max(0, player.hp)|0} / 100  |  护盾 ${Math.max(0, player.shield)|0}`;
+      text += `  |  体力 ${player.stamina.toFixed(0)}%`;
+      text += `  |  击杀 ${player.score}  |  敌人 ${alive}`;
+      HUD.textContent = text;
+      if (alive === 0 && player.state === 'alive') {
+        ALERT.textContent = '胜利！全部敌人被清除';
+      } else if (player.state !== 'alive') {
+        ALERT.textContent = '你倒下了，刷新页面重试';
+      }
+    }
+
+    // 键盘开火
+    window.addEventListener('keydown', e => {
+      if (e.code === 'Space') { shoot(); }
+    });
+
+    // 启动循环
+    drawScene();
+    requestAnimationFrame(tick);
+  </script>
+</body>
+</html>
