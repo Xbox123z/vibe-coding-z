@@ -1,0 +1,306 @@
+﻿<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <title>迷你毁灭战士</title>
+  <style>
+    :root {
+      --wall1: #4a5568;
+      --wall2: #2d3748;
+      --sky: linear-gradient(#111827, #1f2937);
+      --floor: #111;
+      --blood: #ef4444;
+      --hud: #10b981;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: #0b0c10;
+      color: #e5e7eb;
+      font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
+      display: grid;
+      place-items: center;
+      height: 100vh;
+      overflow: hidden;
+    }
+    #frame {
+      position: relative;
+      width: 960px;
+      max-width: 100vw;
+      aspect-ratio: 16 / 9;
+      border: 2px solid #1f2937;
+      box-shadow: 0 25px 50px rgba(0,0,0,0.4);
+      background: #05070c;
+    }
+    canvas { width: 100%; height: 100%; display: block; }
+    #overlay {
+      position: absolute;
+      inset: 0;
+      pointer-events: none;
+      display: flex;
+      align-items: flex-end;
+      padding: 8px 12px;
+      font-size: 14px;
+      gap: 16px;
+    }
+    #cross {
+      position: absolute;
+      left: 50%; top: 50%;
+      width: 16px; height: 16px;
+      margin: -8px 0 0 -8px;
+      pointer-events: none;
+    }
+    #cross:before, #cross:after {
+      content: "";
+      position: absolute;
+      background: #f8fafc;
+      border-radius: 1px;
+    }
+    #cross:before { width: 16px; height: 2px; top: 7px; left: 0; }
+    #cross:after { width: 2px; height: 16px; top: 0; left: 7px; }
+    #help {
+      position: absolute;
+      inset: 0;
+      background: rgba(0,0,0,0.65);
+      color: #f8fafc;
+      display: grid;
+      place-items: center;
+      font-size: 18px;
+      letter-spacing: 0.5px;
+      text-align: center;
+      cursor: pointer;
+    }
+    #help.hidden { display: none; }
+  </style>
+</head>
+<body>
+  <div id="frame">
+    <canvas id="view" width="960" height="540"></canvas>
+    <div id="cross"></div>
+    <div id="overlay"><div id="hud"></div></div>
+    <div id="help">点击开始（锁定鼠标）<br>WASD 移动 · 鼠标/←→ 转向 · 空格/左键 射击</div>
+  </div>
+  <script>
+    // ---- 基础参数 ----
+    const canvas = document.getElementById("view");
+    const ctx = canvas.getContext("2d");
+    const HUD = document.getElementById("hud");
+    const help = document.getElementById("help");
+    const W = canvas.width, H = canvas.height;
+    const FOV = Math.PI / 3; // 60°
+    const HALF_FOV = FOV / 2;
+    const NUM_RAYS = 360;
+    const MAX_DIST = 20;
+    const MOVE_SPEED = 3.5;  // 单位/秒
+    const ROT_SPEED = 2.3;   // 弧度/秒
+    const enemyRadius = 0.35;
+
+    const map = [
+      "111111111111",
+      "1....0.....1",
+      "1.1110.111.1",
+      "1.0..0....01",
+      "1.0..0..E.01",
+      "1.0..000..01",
+      "1.0..0....01",
+      "1.0000.111.1",
+      "1.....0....1",
+      "111111111111"
+    ].map(r => r.replace(/\./g, "0"));
+    const mapH = map.length, mapW = map[0].length;
+
+    const enemies = [
+      { x: 8.5, y: 4.5, alive: true, hp: 2 },
+      { x: 3.5, y: 7.5, alive: true, hp: 2 }
+    ];
+
+    const player = { x: 2.5, y: 2.5, angle: 0, hp: 100 };
+    const keys = new Set(); // 使用 KeyboardEvent.code，避免输入法/布局问题
+
+    let last = performance.now();
+
+    // ---- 输入 ----
+    window.addEventListener("keydown", e => {
+      keys.add(e.code);
+      if (["ArrowUp","ArrowDown","ArrowLeft","ArrowRight","Space"].includes(e.code)) e.preventDefault();
+    });
+    window.addEventListener("keyup", e => keys.delete(e.code));
+    window.addEventListener("mousemove", e => {
+      if (document.pointerLockElement === canvas) {
+        player.angle += e.movementX * 0.0025;
+      }
+    });
+    canvas.addEventListener("click", () => {
+      if (document.pointerLockElement !== canvas) {
+        canvas.requestPointerLock();
+      } else {
+        shoot();
+      }
+    });
+    help.addEventListener("click", () => {
+      canvas.requestPointerLock();
+    });
+    document.addEventListener("pointerlockchange", () => {
+      if (document.pointerLockElement === canvas) help.classList.add("hidden");
+      else help.classList.remove("hidden");
+    });
+    window.addEventListener("blur", () => keys.clear());
+
+    // ---- 工具 ----
+    function isWall(x, y) {
+      const mx = Math.floor(x), my = Math.floor(y);
+      if (mx < 0 || my < 0 || mx >= mapW || my >= mapH) return true;
+      return map[my][mx] === "1";
+    }
+
+    function castRay(angle) {
+      const sin = Math.sin(angle), cos = Math.cos(angle);
+      let dist = 0;
+      let hitVertical = false;
+      while (dist < MAX_DIST) {
+        const x = player.x + cos * dist;
+        const y = player.y + sin * dist;
+        if (isWall(x, y)) {
+          const fx = x - Math.floor(x);
+          const fy = y - Math.floor(y);
+          hitVertical = fx < 0.02 || fx > 0.98;
+          break;
+        }
+        dist += 0.02;
+      }
+      return { dist, hitVertical };
+    }
+
+    function move(dt) {
+      const forward = keys.has("KeyW") ? 1 : 0;
+      const back = keys.has("KeyS") ? 1 : 0;
+      const left = keys.has("KeyA") ? 1 : 0;
+      const right = keys.has("KeyD") ? 1 : 0;
+      const rotL = keys.has("ArrowLeft");
+      const rotR = keys.has("ArrowRight");
+
+      const dir = forward - back;
+      const strafe = right - left;
+
+      if (rotL) player.angle -= ROT_SPEED * dt;
+      if (rotR) player.angle += ROT_SPEED * dt;
+
+      const sin = Math.sin(player.angle), cos = Math.cos(player.angle);
+      const dx = (cos * dir - sin * strafe) * MOVE_SPEED * dt;
+      const dy = (sin * dir + cos * strafe) * MOVE_SPEED * dt;
+
+      const nx = player.x + dx;
+      const ny = player.y + dy;
+      if (!isWall(nx, player.y)) player.x = nx;
+      if (!isWall(player.x, ny)) player.y = ny;
+    }
+
+    function shoot() {
+      const ray = castRay(player.angle);
+      let hitEnemy = null;
+      let minDist = ray.dist;
+      for (const e of enemies) {
+        if (!e.alive) continue;
+        const dx = e.x - player.x, dy = e.y - player.y;
+        const dist = Math.hypot(dx, dy);
+        const angleTo = Math.atan2(dy, dx);
+        const diff = Math.atan2(Math.sin(angleTo - player.angle), Math.cos(angleTo - player.angle));
+        if (Math.abs(diff) < 0.07 && dist < minDist) {
+          minDist = dist;
+          hitEnemy = e;
+        }
+      }
+      if (hitEnemy) {
+        hitEnemy.hp--;
+        if (hitEnemy.hp <= 0) hitEnemy.alive = false;
+        flash();
+      }
+    }
+
+    function flash() {
+      ctx.fillStyle = "rgba(239,68,68,0.25)";
+      ctx.fillRect(0, 0, W, H);
+    }
+
+    function render() {
+      const g = ctx.createLinearGradient(0, 0, 0, H);
+      g.addColorStop(0, "#0f172a");
+      g.addColorStop(0.55, "#0b1220");
+      g.addColorStop(0.56, "#0a0a0a");
+      ctx.fillStyle = g;
+      ctx.fillRect(0, 0, W, H);
+
+      const step = FOV / NUM_RAYS;
+      for (let i = 0; i < NUM_RAYS; i++) {
+        const angle = player.angle - HALF_FOV + step * i;
+        const { dist, hitVertical } = castRay(angle);
+        const corrected = dist * Math.cos(angle - player.angle);
+        const wallH = Math.min(H, H / (corrected + 0.0001));
+        const shade = Math.max(0, 1 - corrected / MAX_DIST);
+        ctx.fillStyle = hitVertical
+          ? `rgba(75,85,99,${0.9 * shade + 0.1})`
+          : `rgba(45,55,72,${0.9 * shade + 0.1})`;
+        const x = (i / NUM_RAYS) * W;
+        ctx.fillRect(x, (H - wallH) / 2, W / NUM_RAYS + 1, wallH);
+      }
+
+      enemies.forEach(e => {
+        if (!e.alive) return;
+        const dx = e.x - player.x, dy = e.y - player.y;
+        const dist = Math.hypot(dx, dy);
+        const angleTo = Math.atan2(dy, dx) - player.angle;
+        const halfW = Math.atan(enemyRadius / dist);
+        if (Math.abs(angleTo) > HALF_FOV + halfW) return;
+        const screenX = (0.5 + (angleTo / FOV)) * W;
+        const size = Math.min(600, H / (dist * 0.5));
+        const y = (H - size) / 2;
+        const x = screenX - size / 2;
+        ctx.fillStyle = `rgba(239,68,68,${Math.max(0.2, 1 - dist / MAX_DIST)})`;
+        ctx.fillRect(x, y, size, size);
+        ctx.fillStyle = "#111";
+        ctx.fillRect(x + size * 0.35, y + size * 0.25, size * 0.12, size * 0.2);
+        ctx.fillRect(x + size * 0.53, y + size * 0.25, size * 0.12, size * 0.2);
+      });
+
+      const mini = 120;
+      ctx.fillStyle = "rgba(0,0,0,0.45)";
+      ctx.fillRect(W - mini - 12, 12, mini, mini);
+      const cell = mini / mapW;
+      for (let y = 0; y < mapH; y++) {
+        for (let x = 0; x < mapW; x++) {
+          if (map[y][x] === "1") {
+            ctx.fillStyle = "#374151";
+            ctx.fillRect(W - mini - 12 + x * cell, 12 + y * cell, cell, cell);
+          }
+        }
+      }
+      ctx.fillStyle = "#10b981";
+      ctx.beginPath();
+      ctx.arc(W - mini - 12 + player.x * cell, 12 + player.y * cell, 3, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = "#10b981";
+      ctx.beginPath();
+      ctx.moveTo(W - mini - 12 + player.x * cell, 12 + player.y * cell);
+      ctx.lineTo(
+        W - mini - 12 + (player.x + Math.cos(player.angle) * 0.6) * cell,
+        12 + (player.y + Math.sin(player.angle) * 0.6) * cell
+      );
+      ctx.stroke();
+
+      HUD.textContent = `HP: ${player.hp} | 敌人: ${enemies.filter(e => e.alive).length}`;
+    }
+
+    function update(now) {
+      const dt = Math.min(0.05, (now - last) / 1000);
+      last = now;
+      move(dt);
+      if (keys.has("Space")) shoot();
+      render();
+      requestAnimationFrame(update);
+    }
+
+    render();
+    requestAnimationFrame(update);
+  </script>
+</body>
+</html>
