@@ -1,0 +1,340 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>3D魔方仿真（Three.js + CDN） - 已修复所有按钮</title>
+    <style>
+        body { margin: 0; overflow: hidden; background: #111; font-family: "Microsoft YaHei", sans-serif; }
+        #container { position: absolute; top: 0; left: 0; width: 100%; height: 100%; }
+        #ui {
+            position: absolute; top: 10px; left: 10px; background: rgba(0,0,0,0.7); padding: 15px; border-radius: 10px;
+            color: white; display: flex; flex-direction: column; gap: 10px; z-index: 100;
+        }
+        button {
+            padding: 8px 16px; background: #333; color: white; border: none; border-radius: 5px;
+            cursor: pointer; font-size: 14px; transition: all 0.2s;
+        }
+        button:hover { background: #555; }
+        .face-btn { width: 50px; height: 50px; font-size: 18px; }
+        #info {
+            position: absolute; bottom: 10px; left: 10px; color: #aaa; font-size: 12px;
+        }
+        #status {
+            position: absolute; top: 10px; right: 10px; background: rgba(0,0,0,0.7); padding: 10px; border-radius: 5px;
+            color: #0f0; font-weight: bold;
+        }
+    </style>
+</head>
+<body>
+    <div id="container"></div>
+    
+    <div id="ui">
+        <h3>🎲 3D魔方仿真（已修复版）</h3>
+        <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 5px;">
+            <!-- U面 -->
+            <button class="face-btn" data-face="U" data-dir="true">U</button>
+            <button class="face-btn" data-face="U" data-dir="false">U'</button>
+            <div></div>
+            
+            <!-- L F R -->
+            <button class="face-btn" data-face="L" data-dir="true">L</button>
+            <button class="face-btn" data-face="F" data-dir="true">F</button>
+            <button class="face-btn" data-face="R" data-dir="true">R</button>
+            
+            <button class="face-btn" data-face="L" data-dir="false">L'</button>
+            <button class="face-btn" data-face="F" data-dir="false">F'</button>
+            <button class="face-btn" data-face="R" data-dir="false">R'</button>
+            
+            <!-- D面 -->
+            <div></div>
+            <button class="face-btn" data-face="D" data-dir="true">D</button>
+            <button class="face-btn" data-face="D" data-dir="false">D'</button>
+            
+            <!-- B面 -->
+            <button class="face-btn" data-face="B" data-dir="true">B</button>
+            <button class="face-btn" data-face="B" data-dir="false">B'</button>
+        </div>
+        
+        <div style="display: flex; gap: 10px;">
+            <button id="scrambleBtn" style="flex:1; background:#d00;">🔀 打乱 (20步)</button>
+            <button id="solveBtn" style="flex:1; background:#0a0;">🔄 自动还原</button>
+            <button id="resetBtn" style="flex:1;">重置</button>
+        </div>
+        
+        <small>鼠标拖拽旋转视角 • 滚轮缩放</small>
+    </div>
+    
+    <div id="status">就绪</div>
+    <div id="info">Three.js CDN • 独立HTML • 所有按钮已用事件监听器绑定</div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r134/three.min.js"></script>
+    <script>
+        // ==================== 全局变量 ====================
+        let scene, camera, renderer;
+        let cubies = [];
+        let moveHistory = [];
+        let isAnimating = false;
+        let animationQueue = [];
+        let currentAngle = 0;
+        let pivot = null;
+        let selectedCubies = [];
+        let radius = 4.5;
+        let azimuth = Math.PI / 4;
+        let polar = Math.PI / 3;
+        let isDragging = false;
+        let prevMouseX = 0, prevMouseY = 0;
+
+        const colors = {
+            R: 0xff0000,
+            L: 0xff8800,
+            U: 0xffffff,
+            D: 0xffff00,
+            F: 0x00ff00,
+            B: 0x0000ff
+        };
+
+        // ==================== 初始化场景 ====================
+        function init() {
+            scene = new THREE.Scene();
+            camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.1, 100);
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setPixelRatio(window.devicePixelRatio);
+            document.getElementById('container').appendChild(renderer.domElement);
+
+            const ambient = new THREE.AmbientLight(0xffffff, 0.6);
+            scene.add(ambient);
+            const dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
+            dirLight.position.set(5, 10, 7);
+            scene.add(dirLight);
+
+            cubies = [];
+            for (let x = -1; x <= 1; x++) {
+                for (let y = -1; y <= 1; y++) {
+                    for (let z = -1; z <= 1; z++) {
+                        const geometry = new THREE.BoxGeometry(0.95, 0.95, 0.95);
+                        const materials = [
+                            new THREE.MeshPhongMaterial({ color: (x === 1) ? colors.R : 0x222222 }),
+                            new THREE.MeshPhongMaterial({ color: (x === -1) ? colors.L : 0x222222 }),
+                            new THREE.MeshPhongMaterial({ color: (y === 1) ? colors.U : 0x222222 }),
+                            new THREE.MeshPhongMaterial({ color: (y === -1) ? colors.D : 0x222222 }),
+                            new THREE.MeshPhongMaterial({ color: (z === 1) ? colors.F : 0x222222 }),
+                            new THREE.MeshPhongMaterial({ color: (z === -1) ? colors.B : 0x222222 })
+                        ];
+                        const mesh = new THREE.Mesh(geometry, materials);
+                        mesh.position.set(x * 1.02, y * 1.02, z * 1.02);
+                        scene.add(mesh);
+                        cubies.push(mesh);
+                    }
+                }
+            }
+
+            updateCamera();
+
+            // === 绑定所有按钮（彻底解决 "xxx is not defined" 问题）===
+            // 主按钮
+            document.getElementById('scrambleBtn').addEventListener('click', scramble);
+            document.getElementById('solveBtn').addEventListener('click', autoSolve);
+            document.getElementById('resetBtn').addEventListener('click', resetCube);
+
+            // 面转动按钮（使用 data 属性 + 事件监听器）
+            document.querySelectorAll('.face-btn').forEach(btn => {
+                const face = btn.dataset.face;
+                const clockwise = btn.dataset.dir === 'true';
+                btn.addEventListener('click', () => rotateFace(face, clockwise));
+            });
+
+            window.addEventListener('resize', onResize);
+            window.addEventListener('mousedown', onMouseDown);
+            window.addEventListener('mousemove', onMouseMove);
+            window.addEventListener('mouseup', onMouseUp);
+            window.addEventListener('wheel', onWheel);
+
+            animate();
+            document.getElementById('status').textContent = '就绪 - 点击任意按钮操作魔方';
+        }
+
+        function updateCamera() {
+            const x = radius * Math.sin(polar) * Math.cos(azimuth);
+            const z = radius * Math.sin(polar) * Math.sin(azimuth);
+            const y = radius * Math.cos(polar);
+            camera.position.set(x, y, z);
+            camera.lookAt(0, 0, 0);
+        }
+
+        // ==================== 鼠标控制 ====================
+        function onMouseDown(e) {
+            if (e.target.tagName === 'BUTTON') return;
+            isDragging = true;
+            prevMouseX = e.clientX;
+            prevMouseY = e.clientY;
+        }
+        function onMouseMove(e) {
+            if (!isDragging) return;
+            const deltaX = e.clientX - prevMouseX;
+            const deltaY = e.clientY - prevMouseY;
+            azimuth += deltaX * 0.005;
+            polar += deltaY * 0.005;
+            polar = Math.max(0.2, Math.min(Math.PI - 0.2, polar));
+            updateCamera();
+            prevMouseX = e.clientX;
+            prevMouseY = e.clientY;
+        }
+        function onMouseUp() { isDragging = false; }
+        function onWheel(e) {
+            radius += e.deltaY * 0.005;
+            radius = Math.max(3, Math.min(8, radius));
+            updateCamera();
+        }
+        function onResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+
+        // ==================== 面旋转核心 ====================
+        function getFaceCubies(face) {
+            const layer = 1;
+            let filterFunc;
+            switch (face) {
+                case 'U': filterFunc = c => Math.round(c.position.y) === layer; break;
+                case 'D': filterFunc = c => Math.round(c.position.y) === -layer; break;
+                case 'F': filterFunc = c => Math.round(c.position.z) === layer; break;
+                case 'B': filterFunc = c => Math.round(c.position.z) === -layer; break;
+                case 'R': filterFunc = c => Math.round(c.position.x) === layer; break;
+                case 'L': filterFunc = c => Math.round(c.position.x) === -layer; break;
+            }
+            return cubies.filter(filterFunc);
+        }
+
+        function startFaceRotation(face, clockwise) {
+            if (isAnimating) return;
+            selectedCubies = getFaceCubies(face);
+            if (selectedCubies.length === 0) return;
+
+            pivot = new THREE.Group();
+            scene.add(pivot);
+
+            const axis = new THREE.Vector3();
+            switch (face) {
+                case 'U': case 'D': axis.set(0, 1, 0); break;
+                case 'F': case 'B': axis.set(0, 0, 1); break;
+                case 'R': case 'L': axis.set(1, 0, 0); break;
+            }
+            if (face === 'D' || face === 'B' || face === 'L') axis.negate();
+
+            selectedCubies.forEach(c => {
+                scene.remove(c);
+                pivot.add(c);
+            });
+
+            const targetAngle = clockwise ? Math.PI / 2 : -Math.PI / 2;
+            moveHistory.push({ face, clockwise });
+
+            isAnimating = true;
+            currentAngle = 0;
+            animateRotation(pivot, axis, targetAngle);
+        }
+
+        function animateRotation(group, axis, target) {
+            const step = target / 12;
+            let stepsDone = 0;
+
+            function rotStep() {
+                currentAngle += step;
+                stepsDone++;
+                if (Math.abs(axis.x) > 0.5) group.rotation.x = currentAngle;
+                else if (Math.abs(axis.y) > 0.5) group.rotation.y = currentAngle;
+                else group.rotation.z = currentAngle;
+
+                renderer.render(scene, camera);
+
+                if (stepsDone < 12) {
+                    requestAnimationFrame(rotStep);
+                } else {
+                    group.children.slice().forEach(child => {
+                        child.updateMatrixWorld(true);
+                        const worldPos = new THREE.Vector3().setFromMatrixPosition(child.matrixWorld);
+                        const worldQuat = new THREE.Quaternion().setFromRotationMatrix(child.matrixWorld);
+                        group.remove(child);
+                        child.position.copy(worldPos);
+                        child.quaternion.copy(worldQuat);
+                        scene.add(child);
+                    });
+                    scene.remove(group);
+                    pivot = null;
+                    isAnimating = false;
+
+                    if (animationQueue.length > 0) {
+                        const next = animationQueue.shift();
+                        startFaceRotation(next.face, next.clockwise);
+                    } else {
+                        document.getElementById('status').textContent = '完成！';
+                    }
+                }
+            }
+            rotStep();
+        }
+
+        function rotateFace(face, clockwise) {
+            if (isAnimating) {
+                animationQueue.push({ face, clockwise });
+                return;
+            }
+            startFaceRotation(face, clockwise);
+            document.getElementById('status').textContent = face + (clockwise ? '' : "'") + ' 旋转中...';
+        }
+
+        // ==================== 打乱 & 自动还原 ====================
+        function scramble() {
+            if (isAnimating) return;
+            moveHistory = [];
+            document.getElementById('status').textContent = '打乱中...';
+            const faces = ['U','D','F','B','L','R'];
+            for (let i = 0; i < 20; i++) {
+                const face = faces[Math.floor(Math.random() * 6)];
+                const cw = Math.random() > 0.5;
+                animationQueue.push({ face, clockwise: cw });
+            }
+            if (!isAnimating && animationQueue.length > 0) {
+                const first = animationQueue.shift();
+                startFaceRotation(first.face, first.clockwise);
+            }
+        }
+
+        function autoSolve() {
+            if (isAnimating || moveHistory.length === 0) {
+                document.getElementById('status').textContent = '已还原！';
+                return;
+            }
+            document.getElementById('status').textContent = '自动还原中...';
+            const reverseMoves = moveHistory.slice().reverse().map(m => ({
+                face: m.face,
+                clockwise: !m.clockwise
+            }));
+            moveHistory = [];
+            animationQueue = reverseMoves;
+            if (animationQueue.length > 0) {
+                const first = animationQueue.shift();
+                startFaceRotation(first.face, first.clockwise);
+            }
+        }
+
+        function resetCube() {
+            if (isAnimating) return;
+            location.reload();
+        }
+
+        // ==================== 动画循环 ====================
+        function animate() {
+            requestAnimationFrame(animate);
+            if (!isAnimating) renderer.render(scene, camera);
+        }
+
+        // ==================== 启动 ====================
+        window.onload = init;
+    </script>
+</body>
+</html>
+
+
