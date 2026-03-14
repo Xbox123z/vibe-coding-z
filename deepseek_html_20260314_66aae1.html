@@ -1,0 +1,487 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>Three.js 自动还原魔方仿真</title>
+    <style>
+        body { margin: 0; overflow: hidden; font-family: 'Arial', sans-serif; }
+        #info {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            color: white;
+            background: rgba(0,0,0,0.7);
+            padding: 8px 16px;
+            border-radius: 20px;
+            pointer-events: none;
+            z-index: 10;
+            font-size: 14px;
+            backdrop-filter: blur(4px);
+            border: 1px solid rgba(255,255,255,0.2);
+        }
+        #status {
+            position: absolute;
+            bottom: 30px;
+            left: 50%;
+            transform: translateX(-50%);
+            color: rgba(255,255,255,0.9);
+            background: rgba(0,0,0,0.6);
+            padding: 12px 30px;
+            border-radius: 40px;
+            font-size: 18px;
+            font-weight: 500;
+            letter-spacing: 1px;
+            backdrop-filter: blur(5px);
+            border: 1px solid rgba(255,215,0,0.3);
+            box-shadow: 0 4px 20px rgba(0,0,0,0.4);
+            z-index: 20;
+            text-shadow: 1px 1px 2px black;
+            pointer-events: none;
+        }
+        .instruction {
+            position: absolute;
+            bottom: 100px;
+            right: 20px;
+            color: #aaa;
+            font-size: 12px;
+            background: rgba(20,20,20,0.5);
+            padding: 6px 12px;
+            border-radius: 16px;
+            backdrop-filter: blur(2px);
+            border: 1px solid #333;
+            z-index: 15;
+        }
+    </style>
+</head>
+<body>
+    <div id="info">🧊 3D 魔方仿真 | 自动还原演示</div>
+    <div id="status">🔄 打乱中 ...</div>
+    <div class="instruction">⚡ 等待3秒后自动还原 | 拖动视角查看</div>
+
+    <!-- 使用CDN引入Three.js核心库和轨道控制器 -->
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.128.0/build/three.module.js",
+                "three/addons/": "https://unpkg.com/three@0.128.0/examples/jsm/"
+            }
+        }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+        import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+        // --- 初始化场景、相机、渲染器 ---
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color(0x111122); // 深蓝黑色背景，衬托魔方色彩
+
+        const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 1000);
+        camera.position.set(5, 5, 5);
+        camera.lookAt(0, 0, 0);
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.setPixelRatio(window.devicePixelRatio);
+        renderer.shadowMap.enabled = false; // 本场景不需要阴影，提升性能
+        renderer.outputEncoding = THREE.sRGBEncoding; // 对于r128版本，使用outputEncoding
+        renderer.toneMapping = THREE.ACESFilmicToneMapping;
+        renderer.toneMappingExposure = 1.2;
+        document.body.appendChild(renderer.domElement);
+
+        // --- 轨道控制器，允许用户自由视角 ---
+        const controls = new OrbitControls(camera, renderer.domElement);
+        controls.enableDamping = true;
+        controls.dampingFactor = 0.05;
+        controls.autoRotate = false;
+        controls.enableZoom = true;
+        controls.target.set(0, 0, 0);
+        controls.maxPolarAngle = Math.PI / 2; // 限制角度，避免看到背面空白
+
+        // --- 灯光设置 ---
+        // 环境光，提供基础照明
+        const ambientLight = new THREE.AmbientLight(0x404060);
+        scene.add(ambientLight);
+
+        // 主光源1 - 暖色方向光
+        const light1 = new THREE.DirectionalLight(0xffeedd, 1.2);
+        light1.position.set(2, 5, 3);
+        scene.add(light1);
+
+        // 主光源2 - 冷色方向光，增加立体感
+        const light2 = new THREE.DirectionalLight(0xccddff, 0.8);
+        light2.position.set(-3, 4, -2);
+        scene.add(light2);
+
+        // 背光补光
+        const light3 = new THREE.DirectionalLight(0xffffff, 0.5);
+        light3.position.set(0, -1, -5);
+        scene.add(light3);
+
+        // 添加一些小的点光源作为辅助，让颜色更鲜艳
+        const pointLight = new THREE.PointLight(0x4466ff, 0.3);
+        pointLight.position.set(2, 1, 2);
+        scene.add(pointLight);
+
+        // 添加一个简单的网格地面和轴线，用于参考空间（可选，为了美观可以不加，但加上有助于感受三维）
+        const gridHelper = new THREE.GridHelper(10, 20, 0x8888ff, 0x333344);
+        gridHelper.position.y = -1.8; // 将网格稍微下移，让魔方看起来悬浮
+        scene.add(gridHelper);
+        
+        // 加一些星星效果（小粒子）
+        const starsGeometry = new THREE.BufferGeometry();
+        const starsCount = 800;
+        const starPositions = new Float32Array(starsCount * 3);
+        for (let i = 0; i < starsCount * 3; i += 3) {
+            starPositions[i] = (Math.random() - 0.5) * 200;
+            starPositions[i+1] = (Math.random() - 0.5) * 200;
+            starPositions[i+2] = (Math.random() - 0.5) * 200;
+        }
+        starsGeometry.setAttribute('position', new THREE.BufferAttribute(starPositions, 3));
+        const starsMaterial = new THREE.PointsMaterial({color: 0xffffff, size: 0.15, transparent: true});
+        const stars = new THREE.Points(starsGeometry, starsMaterial);
+        scene.add(stars);
+
+        // --- 魔方核心数据 ---
+        // 颜色定义 (使用鲜艳的标准魔方色)
+        const colors = {
+            white: 0xffffff,  // 上
+            yellow: 0xffdd00, // 下
+            red: 0xc41e3a,    // 右
+            orange: 0xff5800, // 左
+            blue: 0x0051ba,   // 前
+            green: 0x009e60   // 后
+        };
+
+        // 小立方体的尺寸和间隙
+        const cubeSize = 0.9;
+        const gap = 0.05; // 间隙，使得黑色缝隙可见
+        const totalSize = cubeSize + gap;
+
+        // 存储所有小立方体的数组，每个元素包含mesh和初始位置（用于还原）
+        const cubes = [];
+
+        // 六个面的法线方向对应的颜色 (顺序: 上, 下, 左, 右, 前, 后)
+        // 注意坐标系: Y轴向上, X轴向右, Z轴向屏幕外(前)
+        const directions = [
+            { pos: [0, 1, 0], color: colors.white },    // 上
+            { pos: [0, -1, 0], color: colors.yellow },  // 下
+            { pos: [-1, 0, 0], color: colors.orange },  // 左
+            { pos: [1, 0, 0], color: colors.red },      // 右
+            { pos: [0, 0, 1], color: colors.blue },     // 前
+            { pos: [0, 0, -1], color: colors.green }    // 后
+        ];
+
+        // 创建27个小立方体 (3x3x3)
+        for (let x = -1; x <= 1; x++) {
+            for (let y = -1; y <= 1; y++) {
+                for (let z = -1; z <= 1; z++) {
+                    // 创建一个小立方体的几何体
+                    const geometry = new THREE.BoxGeometry(cubeSize, cubeSize, cubeSize);
+                    
+                    // 为六个面准备材质数组
+                    const materials = [];
+                    
+                    // 遍历六个面，根据位置决定是否上色 (如果小方块在某个面的最外层，则上对应颜色，否则黑色)
+                    // 顺序: right, left, up, down, front, back (BoxGeometry默认材质索引顺序)
+                    const faceDirections = [
+                        { dir: [1, 0, 0], defaultColor: 0x222222 }, // 右
+                        { dir: [-1, 0, 0], defaultColor: 0x222222 }, // 左
+                        { dir: [0, 1, 0], defaultColor: 0x222222 }, // 上
+                        { dir: [0, -1, 0], defaultColor: 0x222222 }, // 下
+                        { dir: [0, 0, 1], defaultColor: 0x222222 }, // 前
+                        { dir: [0, 0, -1], defaultColor: 0x222222 } // 后
+                    ];
+
+                    // 根据小方块的世界坐标 (x, y, z) 和面的方向，决定材质颜色
+                    for (let i = 0; i < faceDirections.length; i++) {
+                        const [dx, dy, dz] = faceDirections[i].dir;
+                        let color = faceDirections[i].defaultColor;
+                        
+                        // 检查这个方向是否是最外层
+                        // 例如右面: x == 1 且 dx == 1
+                        if (dx === 1 && x === 1) color = colors.red;
+                        else if (dx === -1 && x === -1) color = colors.orange;
+                        else if (dy === 1 && y === 1) color = colors.white;
+                        else if (dy === -1 && y === -1) color = colors.yellow;
+                        else if (dz === 1 && z === 1) color = colors.blue;
+                        else if (dz === -1 && z === -1) color = colors.green;
+                        
+                        // 创建材质，增加一点光泽感
+                        const material = new THREE.MeshStandardMaterial({
+                            color: color,
+                            roughness: 0.3,
+                            metalness: 0.1,
+                            emissive: 0x000000,
+                            emissiveIntensity: 0,
+                            shininess: 30
+                        });
+                        materials.push(material);
+                    }
+
+                    // 创建网格
+                    const cube = new THREE.Mesh(geometry, materials);
+                    
+                    // 设置位置，考虑间隙
+                    cube.position.set(x * totalSize, y * totalSize, z * totalSize);
+                    
+                    // 存储原始位置（用于还原），以及一个初始旋转（无）
+                    cube.userData = {
+                        initPos: cube.position.clone(),
+                        initQuat: cube.quaternion.clone()
+                    };
+                    
+                    scene.add(cube);
+                    cubes.push(cube);
+                }
+            }
+        }
+
+        // 添加一个半透明的外框球体或者环境立方体来增加视觉效果？不需要，但可以加一个淡淡的雾
+        scene.fog = new THREE.FogExp2(0x111122, 0.02);
+
+        // --- 动画控制逻辑: 自动打乱后还原 ---
+        // 定义旋转序列 (使用标准的层转动，这里简化：由于我们直接旋转整个组，为了模拟自动还原，
+        // 我们将随机旋转打乱，然后反向旋转还原。但为了效果逼真，我们采用一系列90度旋转，
+        // 并且每个旋转围绕不同的轴和层。但为了简化代码且实现“自动还原”，我们可以通过记录旋转历史，
+        // 或者更简单：先执行一组随机旋转（打乱），然后执行逆序相反的旋转（还原）。
+        // 因为每个立方体都是独立的对象，我们不能简单旋转组。我们需要实现层旋转的动画。
+        // 
+        // 这里采用一种视觉上令人满意且简单的方法：
+        // 1. 打乱阶段：连续随机选择轴、方向、层，旋转90度，每次旋转动画完成后继续下一次。
+        // 2. 还原阶段：将打乱序列逆序并反转方向执行。
+        // 
+        // 为了实现动画，我们需要一个队列系统，每个旋转动画持续一段时间。
+        
+        // 定义旋转队列
+        let animationQueue = [];
+        let isAnimating = false;
+        let currentRotation = null; // { axis, layerIndex, angle, duration, elapsed }
+        
+        // 打乱序列生成 (随机15步)
+        const shuffleSteps = [];
+        const stepCount = 18; // 18步打乱，看起来足够乱
+        
+        const axes = ['x', 'y', 'z'];
+        const dirs = [1, -1]; // 1 表示正方向旋转（右手法则），-1 表示反向
+        // 层索引：对于轴x，层由x坐标决定，范围-1,0,1；同样y,z。但为了简单，我们只旋转中间层和外层，全部用层坐标。
+        // 生成随机步骤
+        for (let i = 0; i < stepCount; i++) {
+            const axis = axes[Math.floor(Math.random() * axes.length)];
+            const direction = dirs[Math.floor(Math.random() * dirs.length)];
+            // 随机层: -1, 0, 1
+            const layer = (Math.floor(Math.random() * 3) - 1); 
+            shuffleSteps.push({ axis, direction, layer });
+        }
+        
+        // 还原序列就是逆序且方向取反
+        const restoreSteps = [...shuffleSteps].reverse().map(step => ({
+            axis: step.axis,
+            direction: -step.direction,
+            layer: step.layer
+        }));
+
+        // 状态文字更新
+        const statusDiv = document.getElementById('status');
+        
+        // 开始打乱
+        setTimeout(() => {
+            // 将打乱步骤加入队列
+            shuffleSteps.forEach(step => {
+                animationQueue.push({
+                    ...step,
+                    duration: 200, // 每步200ms
+                    angle: Math.PI / 2 // 90度
+                });
+            });
+            // 打乱完成后，延迟1秒开始还原
+            animationQueue.push({ special: 'pause', duration: 800 }); // 暂停标记
+            
+            // 然后加入还原步骤
+            restoreSteps.forEach(step => {
+                animationQueue.push({
+                    ...step,
+                    duration: 200,
+                    angle: Math.PI / 2
+                });
+            });
+            
+            // 添加一个循环标记？不需要，完成后停止，显示“已还原”
+            animationQueue.push({ special: 'done' });
+            
+            // 开始处理队列
+            processQueue();
+        }, 500); // 等待0.5秒让场景稳定
+        
+        // 队列处理函数
+        function processQueue() {
+            if (animationQueue.length === 0) {
+                isAnimating = false;
+                statusDiv.innerText = '✅ 已还原';
+                return;
+            }
+            
+            const next = animationQueue.shift();
+            
+            if (next.special === 'pause') {
+                statusDiv.innerText = '⏳ 准备还原...';
+                setTimeout(processQueue, next.duration);
+                return;
+            }
+            
+            if (next.special === 'done') {
+                statusDiv.innerText = '✅ 已还原';
+                isAnimating = false;
+                return;
+            }
+            
+            // 正常旋转步骤
+            statusDiv.innerText = `🔄 旋转中 ... 剩余 ${animationQueue.length} 步`;
+            performRotation(next.axis, next.layer, next.direction * next.angle, next.duration, () => {
+                // 完成后继续下一个
+                processQueue();
+            });
+        }
+        
+        // 执行单步旋转动画
+        function performRotation(axis, layerValue, totalAngle, duration, onComplete) {
+            const startTime = performance.now();
+            const endTime = startTime + duration;
+            
+            // 确定需要旋转的立方体：根据轴和层值，筛选坐标匹配的立方体
+            const targetCubes = cubes.filter(cube => {
+                const pos = cube.position;
+                if (axis === 'x') return Math.abs(pos.x - layerValue * totalSize) < 0.1;
+                if (axis === 'y') return Math.abs(pos.y - layerValue * totalSize) < 0.1;
+                if (axis === 'z') return Math.abs(pos.z - layerValue * totalSize) < 0.1;
+            });
+            
+            // 记录每个立方体的初始旋转和位置（相对于旋转中心）
+            // 旋转中心是原点 (0,0,0) 因为魔方中心在原点。对于层旋转，中心就是原点，因为层经过原点？注意如果layerValue为0，层过原点，正确。
+            // 对于外层 layerValue = ±1，旋转中心也是原点，没问题。
+            
+            // 我们需要旋转的是这些立方体的位置和方向。为了平滑，我们在动画循环中更新每个cube的position和quaternion。
+            // 但注意，累积旋转可能会引起误差，这里简单处理：每帧设置新的旋转。
+            
+            // 计算旋转轴向量
+            let axisVector = new THREE.Vector3();
+            if (axis === 'x') axisVector.set(1, 0, 0);
+            else if (axis === 'y') axisVector.set(0, 1, 0);
+            else axisVector.set(0, 0, 1);
+            
+            // 动画函数
+            function animateRotation() {
+                const now = performance.now();
+                let progress = (now - startTime) / duration;
+                if (progress >= 1) progress = 1;
+                
+                // 当前角度 = 总角度 * progress
+                const currentAngle = totalAngle * progress;
+                
+                // 对每个目标立方体应用旋转
+                targetCubes.forEach(cube => {
+                    // 计算相对于原点的位置旋转
+                    const pos = cube.userData.initPos.clone(); // 注意：我们需要一个基准位置，不能用cube.position因为会累积误差
+                    // 但是我们没有在开始记录基准位置，所以需要动态更新基准？这里简化：我们基于初始位置（相对于原点）旋转。
+                    // 问题：cube.userData.initPos 是魔方创建时的初始位置（还原态），但经过多次旋转后，这个位置已经变了。
+                    // 因此我们不能用initPos。我们需要记录每个步骤开始时的位置和四元数。
+                    // 修改：在performRotation开始时，为每个targetCube保存当前世界位置和方向作为基准。
+                    // 下面我们会在调用前做这件事。
+                });
+                
+                // 但由于上面提到的问题，我们需要在外部保存基准。我们将在函数开头保存。
+                // 调整代码结构：使用一个对象存储基准。
+                if (!performRotation.currentBase) {
+                    // 第一次调用时初始化基准
+                    performRotation.currentBase = targetCubes.map(cube => ({
+                        cube,
+                        startPos: cube.position.clone(),
+                        startQuat: cube.quaternion.clone()
+                    }));
+                }
+                
+                const base = performRotation.currentBase;
+                
+                // 计算当前旋转矩阵或四元数
+                const quat = new THREE.Quaternion().setFromAxisAngle(axisVector, currentAngle);
+                
+                base.forEach(item => {
+                    const { cube, startPos, startQuat } = item;
+                    
+                    // 旋转位置
+                    const rotatedPos = startPos.clone().applyQuaternion(quat);
+                    cube.position.copy(rotatedPos);
+                    
+                    // 旋转方向：新四元数 = 旋转四元数 * 初始四元数
+                    const newQuat = quat.clone().multiply(startQuat);
+                    cube.quaternion.copy(newQuat);
+                });
+                
+                if (progress < 1) {
+                    requestAnimationFrame(animateRotation);
+                } else {
+                    // 完成，清理基准，并更新userData中的initPos？为了后续旋转的基准正确，我们需要更新cube的基准位置为最终位置。
+                    // 但是注意，下次旋转会基于新的位置再次记录基准，所以这里不需要更新userData.initPos，因为我们在每次旋转开始会重新记录。
+                    // 但为了后续旋转（比如反向还原）能正确，我们在每次旋转结束后，实际上cube的position已经改变了，
+                    // 下一次旋转开始时，我们会记录当时的位置作为基准，所以没问题。
+                    // 清理基准
+                    delete performRotation.currentBase;
+                    
+                    // 微调，确保位置和旋转精确到90度倍数（由于浮点误差）
+                    targetCubes.forEach(cube => {
+                        // 四舍五入到小数点后5位，防止误差积累
+                        cube.position.x = Math.round(cube.position.x / totalSize) * totalSize;
+                        cube.position.y = Math.round(cube.position.y / totalSize) * totalSize;
+                        cube.position.z = Math.round(cube.position.z / totalSize) * totalSize;
+                        
+                        // 将旋转四元数归一化并确保角度是90度倍数有点复杂，这里简化，靠累积误差不大
+                    });
+                    
+                    onComplete();
+                }
+            }
+            
+            // 初始化基准数据
+            performRotation.currentBase = targetCubes.map(cube => ({
+                cube,
+                startPos: cube.position.clone(),
+                startQuat: cube.quaternion.clone()
+            }));
+            
+            // 启动动画
+            requestAnimationFrame(animateRotation);
+        }
+
+        // --- 渲染循环 ---
+        function render() {
+            requestAnimationFrame(render);
+            
+            // 更新控制器
+            controls.update();
+            
+            // 星星缓慢旋转
+            stars.rotation.y += 0.0001;
+            
+            renderer.render(scene, camera);
+        }
+        
+        render();
+
+        // --- 窗口大小自适应 ---
+        window.addEventListener('resize', onWindowResize, false);
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+
+        // 一些额外的说明：为了视觉效果，可以稍微调整相机初始角度
+        camera.position.set(4, 3, 5);
+        controls.target.set(0, 0, 0);
+        controls.update();
+
+        console.log('魔方初始化完成，等待自动打乱和还原...');
+    </script>
+</body>
+</html>
